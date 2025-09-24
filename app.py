@@ -9,18 +9,20 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Load Groq API key securely from environment
+# Load Groq API key from environment
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-if not GROQ_API_KEY:
-    raise ValueError("❌ GROQ_API_KEY is missing! Set it in Render dashboard → Environment Variables.")
 
 @app.route("/")
 def home():
-    return "✅ Groq-powered childbot webhook is running!"
+    return "Groq-powered webhook is running!"
 
-def handle_chat(user_input: str):
-    """Send user input to Groq API and return the reply"""
+
+def handle_chat(user_input):
+    """Send the user input to Groq and return reply + error message (if any)."""
+    if not GROQ_API_KEY:
+        return None, "❌ GROQ_API_KEY is missing in environment!"
+
     payload = {
         "messages": [
             {
@@ -44,50 +46,62 @@ def handle_chat(user_input: str):
         "Content-Type": "application/json",
     }
 
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        json=payload,
-        headers=headers,
-    )
-
-    print("🔎 Groq response status:", response.status_code)
-    print("🔎 Groq response text:", response.text)
-
-    if response.status_code != 200:
-        return None, f"Groq API error: {response.text}"
-
     try:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+
+        print("🔎 Groq response status:", response.status_code)
+        print("🔎 Groq response text:", response.text)
+
+        if response.status_code != 200:
+            return None, f"Groq API error: {response.text}"
+
         groq_data = response.json()
-        choices = groq_data.get("choices", [])
-
-        if choices and "message" in choices[0]:
-            reply = choices[0]["message"].get("content", "No content.")
-        else:
-            reply = "No reply from Groq."
-
+        reply = (
+            groq_data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        if not reply:
+            return None, "Empty reply from Groq"
         return reply, None
+
     except Exception as e:
-        return None, f"Error parsing Groq response: {e}"
+        print("❌ Exception while calling Groq:", str(e))
+        return None, str(e)
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json()
-    print("📥 Incoming Lovable payload:", data)
 
-    user_input = data.get("user_input", "")
-    if not user_input:
-        return jsonify({"error": "No user_input field in request"}), 400
-
-    reply, error = handle_chat(user_input)
-    if error:
-        return jsonify({"error": error}), 500
-
-    return jsonify({"reply": reply})
-
-# Add /chat alias for Lovable
 @app.route("/chat", methods=["POST"])
 def chat():
-    return webhook()
+    """Main chat webhook endpoint."""
+    try:
+        data = request.get_json(force=True)
+        print("📩 Incoming Lovable payload:", data)
+
+        user_input = data.get("user_input", "")
+        if not user_input:
+            return jsonify({"error": "No message received"}), 400
+
+        reply, error = handle_chat(user_input)
+
+        if error:
+            print("⚠️ Error occurred:", error)
+            # Fallback safe reply
+            reply = (
+                "Hmm 🤔 I don't know that right now. "
+                "But the sky is blue because sunlight scatters in the air 🌤️"
+            )
+
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        print("💥 Unhandled server error:", str(e))
+        return jsonify({"error": "Internal server error"}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True)
